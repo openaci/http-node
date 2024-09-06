@@ -1,0 +1,16 @@
+{
+  "name": "openaci",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "tsx watch example/my-first-aci/main.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.4",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.4"
+  },
+  "dependencies": {
+    "openai": "^4.57.3",
+    "zod": "^3.23.8"
+  }
+}
