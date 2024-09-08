@@ -8,11 +8,11 @@ export type AciConfig = {
      * The OpenAI client to use.
      * @default new OpenAI()
      */
-    client?: OpenAI
+    llmClient?: OpenAI
     /**
-     * The model to use.
+     * The model name to use.
      */
-    model: string
+    llmName: string
     /**
      * The temperature to use.
      * @default 0

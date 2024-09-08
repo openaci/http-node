@@ -1,13 +1,35 @@
 {
-  "name": "openaci",
-  "version": "1.0.0",
+  "name": "@openaci/http",
+  "version": "0.1.0",
+  "description": "OpenACI HTTP Library",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "dev": "tsx watch example/my-first-aci/main.ts"
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
+  "keywords": [
+    "aci",
+    "openaci",
+    "llm",
+    "http"
+  ],
+  "author": "Luis Farzati <lfarzati@gmail.com>",
+  "license": "Apache-2.0",
+  "repository": "github:openaci/http-node",
   "devDependencies": {
+    "@microsoft/api-extractor": "^7.47.7",
     "@types/node": "^22.5.4",
+    "tsup": "^8.2.4",
     "tsx": "^4.19.0",
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
   },
   "dependencies": {
     "openai": "^4.57.3",

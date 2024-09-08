@@ -1,32 +1,13 @@
 import { OpenAI } from 'openai';
-import { zodFunction } from 'openai/helpers/zod.mjs';
-import type { ChatCompletionCreateParams } from 'openai/resources/index.mjs';
+import { zodFunction } from 'openai/helpers/zod';
+import type { ChatCompletionCreateParams } from 'openai/resources/index';
 import { z, type AnyZodObject } from 'zod';
 import type { AciConfig } from './aci-config';
-import type { IntentHandler } from './intent-handler';
+import { MetadataFunctionParameters } from './common';
+import { IntentHandler, IntentHandlerResponse, IntentSpec } from './types';
 
 export const DEFAULT_TEMPERATURE = 0;
 export const DEFAULT_SEED = 0;
-
-type IntentDefinition = {
-    intent: string,
-    schema: AnyZodObject,
-    handler: IntentHandler<any>
-}
-
-type IntentEntities = Record<string, unknown> & {
-    output_format?: 'text' | 'structured' | 'image' | 'audio'
-    structured_format?: string,
-    structured_schema?: string
-    message?: string;
-}
-
-type IntentHandlerResponse = {
-    output_format: 'text' | 'structured' | 'image' | 'audio',
-    structured_format?: string,
-    output: string,
-}
-
 
 const parseIntentPrompt = `
 Analyze the following utterance and identify the intent, entities and any other relevant information. 
@@ -36,18 +17,22 @@ If a structured output is required, but no format is provided, use YAML as the d
 If there is no tool to fulfill the intent, call the \`cannot_fulfill_intent\` tool with "Sorry, I don't have the capability to {fulfill the intent}.", still respecting the desired output format (if specified).
 Don't improvise or make up a response.`
 
+const formatResponsePrompt = (response_format: string, structured_schema?: string) => `
+Fulfill the user's intent by providing a ${response_format} response.
+${structured_schema ? `Use the following schema: ${structured_schema}` : ''}
+`.trim()
 
 export class ACI {
-    private readonly client: OpenAI;
-    private readonly model: string;
+    private readonly llmName: string;
+    private readonly llmClient: OpenAI;
     private readonly temperature: number;
     private readonly seed: number;
     private readonly maxTokens?: number;
-    private readonly intents: Map<string, IntentDefinition> = new Map()
+    private readonly intents: Map<string, IntentSpec> = new Map()
 
     public constructor(config: AciConfig) {
-        this.client = config.client ?? new OpenAI()
-        this.model = config.model;
+        this.llmClient = config.llmClient ?? new OpenAI()
+        this.llmName = config.llmName;
         this.temperature = config.temperature ?? DEFAULT_TEMPERATURE;
         this.seed = config.seed ?? DEFAULT_SEED;
         this.maxTokens = config.maxTokens;
@@ -68,15 +53,11 @@ export class ACI {
     public async handle(utterance: string): Promise<IntentHandlerResponse> {
         const tools = Array.from(this.intents.entries()).map(([functionName, definition]) => zodFunction({
             name: functionName,
-            parameters: definition.schema.merge(z.object({
-                output_format: z.enum(['text', 'structured', 'image', 'audio']),
-                structured_format: z.string().optional(),
-                structured_schema: z.string().optional()
-            }))
+            parameters: definition.schema.merge(MetadataFunctionParameters)
         }))
 
         const body: ChatCompletionCreateParams = {
-            model: this.model,
+            model: this.llmName,
             temperature: this.temperature,
             seed: this.seed,
             max_tokens: this.maxTokens,
@@ -88,73 +69,49 @@ export class ACI {
             tool_choice: 'required',
         }
 
-        let result = await this.client.chat.completions.create(body);
-
-        let intent: IntentDefinition | undefined;
-        let entities: IntentEntities = {}
-        let response;
+        let result = await this.llmClient.chat.completions.create(body);
 
         const toolCallMessage = result.choices[0].message
         const functionCall = toolCallMessage.tool_calls?.[0].function
-        if (functionCall) {
-            intent = this.intents.get(functionCall.name)
-            entities = JSON.parse(functionCall.arguments)
-        }
-
-        if (!functionCall || !intent) {
+        if (!functionCall) {
             // shouldn't happen since we have a catch-all cannot_fulfill_intent
             console.debug(JSON.stringify(result.choices[0], null, 2))
             throw new Error('No intent definition found')
         }
 
-        // @ts-ignore
-        let { output_format, structured_format, structured_schema, ...rest } = entities
-
-        if (output_format === 'structured') {
-            structured_format ??= 'yaml'
+        const intentSpec = this.intents.get(functionCall.name)
+        if (!intentSpec) {
+            // shouldn't happen 
+            console.debug(JSON.stringify(functionCall, null, 2))
+            throw new Error('Function not matching any intent definition')
         }
 
-        if (intent.intent === 'cannot_fulfill_intent') {
+        const { intent, schema, handler } = intentSpec
+
+        const entities: z.infer<typeof MetadataFunctionParameters> & z.infer<typeof schema> = JSON.parse(functionCall.arguments)
+
+        let { response_format, structured_schema, message, ...rest } = entities
+
+        if (intent === 'cannot_fulfill_intent') {
             console.debug(JSON.stringify(result.choices[0], null, 2))
             return {
-                output_format: output_format!,
-                structured_format: structured_format!,
+                response_format,
                 output: entities.message!
             }
         }
 
-        response = await intent.handler({
-            utterance, intent: intent.intent, entities: rest
+        const response = await handler({
+            utterance, intent: intent, entities: rest
         })
 
-        if (output_format === 'image') {
-            const image = await this.client.images.generate({
-                model: 'dall-e-3',
-                prompt: `${utterance}. Here's the information you need: ${JSON.stringify(response)}`,
-                n: 1,
-                response_format: 'b64_json',
-                size: '1024x1024',
-            })
-
-            return {
-                output_format,
-                output: image.data[0].b64_json!
-            }
-        }
-
-        const systemPrompt = `
-        Fulfill the user's intent by providing a ${output_format} response${output_format === 'structured' ? ` in ${structured_format} format` : ''}.
-        ${structured_schema ? `Use the following schema: ${structured_schema}` : ''}
-                `.trim()
-
-        result = await this.client.chat.completions.create({
-            model: this.model,
+        result = await this.llmClient.chat.completions.create({
+            model: this.llmName,
             temperature: this.temperature,
             seed: this.seed,
             max_tokens: this.maxTokens,
             messages: [
                 {
-                    role: 'system', content: systemPrompt
+                    role: 'system', content: formatResponsePrompt(response_format, structured_schema)
                 },
                 { role: "user", content: utterance },
                 toolCallMessage,
@@ -163,8 +120,7 @@ export class ACI {
         });
 
         return {
-            output_format: output_format!,
-            structured_format: structured_format!,
+            response_format,
             output: result.choices[0].message.content!
         }
     }
