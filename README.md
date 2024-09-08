@@ -42,12 +42,19 @@ app.listen(3000);
 ```bash
 node main.js
 
+# Simple call, can be made by a user or by an ACI client
 curl -XPOST http://localhost:3000 -d "How does my name look like in base64? It's John"
 Your name "John" in base64 is: Sm9obg==
 
+# Call with a structured response that can be used by an ACI client
 curl -XPOST http://localhost:3000 -d "Write a JSON document with `code: {base64 of 'OpenACI'}`"
 {"code":"T3BlbkFDSQ=="}
 
+# Call with a JSON request body and a JSON response – no different to a normal JSON API
+curl -XPOST http://localhost:3000 -d '{"intent":"convertToBase64","name":"OpenACI"}'
+{"name":"OpenACI","base64":"T3BlbkFDSQ=="}
+
+# Call with multiple parameters (ACI calls the intent handler multiple times)
 curl -XPOST http://localhost:3000 -d "Show me an ascii table with the base64 representation of these names: John Connor, Sarah Connor, Kyle Reese"
 | Name          | Base64                |
 |---------------|-----------------------|
