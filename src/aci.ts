@@ -1,10 +1,10 @@
 import { OpenAI } from 'openai';
 import { zodFunction } from 'openai/helpers/zod';
-import type { ChatCompletionCreateParams } from 'openai/resources/index';
+import type { ChatCompletionCreateParams, ChatCompletionMessageParam } from 'openai/resources/index';
 import { z, type AnyZodObject } from 'zod';
 import type { AciConfig } from './aci-config';
 import { MetadataFunctionParameters } from './common';
-import { IntentHandler, IntentHandlerResponse, IntentSpec } from './types';
+import { IntentHandler, IntentHandlerResponse, IntentSpec, ResponseFormat } from './types';
 
 export const DEFAULT_TEMPERATURE = 0;
 export const DEFAULT_SEED = 0;
@@ -72,37 +72,49 @@ export class ACI {
         let result = await this.llmClient.chat.completions.create(body);
 
         const toolCallMessage = result.choices[0].message
-        const functionCall = toolCallMessage.tool_calls?.[0].function
-        if (!functionCall) {
-            // shouldn't happen since we have a catch-all cannot_fulfill_intent
-            console.debug(JSON.stringify(result.choices[0], null, 2))
-            throw new Error('No intent definition found')
-        }
+        let toolCallResults: ChatCompletionMessageParam[] = []
 
-        const intentSpec = this.intents.get(functionCall.name)
-        if (!intentSpec) {
-            // shouldn't happen 
-            console.debug(JSON.stringify(functionCall, null, 2))
-            throw new Error('Function not matching any intent definition')
-        }
+        let responseFormat: ResponseFormat = 'text:plain'
+        let structuredSchema: string | undefined
 
-        const { intent, schema, handler } = intentSpec
-
-        const entities: z.infer<typeof MetadataFunctionParameters> & z.infer<typeof schema> = JSON.parse(functionCall.arguments)
-
-        let { response_format, structured_schema, message, ...rest } = entities
-
-        if (intent === 'cannot_fulfill_intent') {
-            console.debug(JSON.stringify(result.choices[0], null, 2))
-            return {
-                response_format,
-                output: entities.message!
+        for (const toolCall of toolCallMessage.tool_calls ?? []) {
+            const functionCall = toolCall.function
+            if (!functionCall) {
+                // shouldn't happen since we have a catch-all cannot_fulfill_intent
+                console.debug(JSON.stringify(result.choices[0], null, 2))
+                throw new Error('No intent definition found')
             }
-        }
 
-        const response = await handler({
-            utterance, intent: intent, entities: rest
-        })
+            const intentSpec = this.intents.get(functionCall.name)
+            if (!intentSpec) {
+                // shouldn't happen 
+                console.debug(JSON.stringify(functionCall, null, 2))
+                throw new Error('Function not matching any intent definition')
+            }
+
+            const { intent, schema, handler } = intentSpec
+
+            const entities: z.infer<typeof MetadataFunctionParameters> & z.infer<typeof schema> = JSON.parse(functionCall.arguments)
+
+            let { response_format, structured_schema, message, ...rest } = entities
+
+            if (intent === 'cannot_fulfill_intent') {
+                return {
+                    response_format,
+                    output: entities.message!
+                }
+            }
+
+            responseFormat ??= response_format
+            structuredSchema ??= structured_schema
+            const response = await handler({
+                utterance, intent: intent, entities: rest
+            })
+
+            toolCallResults.push({
+                role: 'tool', content: JSON.stringify(response), tool_call_id: toolCall.id!
+            })
+        }
 
         result = await this.llmClient.chat.completions.create({
             model: this.llmName,
@@ -111,16 +123,16 @@ export class ACI {
             max_tokens: this.maxTokens,
             messages: [
                 {
-                    role: 'system', content: formatResponsePrompt(response_format, structured_schema)
+                    role: 'system', content: formatResponsePrompt(responseFormat, structuredSchema)
                 },
                 { role: "user", content: utterance },
                 toolCallMessage,
-                { role: 'tool', content: JSON.stringify(response), tool_call_id: toolCallMessage.tool_calls?.[0].id! }
+                ...toolCallResults
             ],
         });
 
         return {
-            response_format,
+            response_format: responseFormat,
             output: result.choices[0].message.content!
         }
     }
